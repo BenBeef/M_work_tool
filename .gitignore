@@ -1,0 +1,6 @@
+*swo
+*swp
+*pyc
+web_data/output
+./note.txt
+./data/*
