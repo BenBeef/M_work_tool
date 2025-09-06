@@ -11,7 +11,7 @@ import traceback
 import os
 from config import Config
 
-from sqlalchemy import false 
+from sqlalchemy import false, true 
 
 def extract_ref_tag(citation_cont:str):
     """
@@ -59,7 +59,7 @@ def cut_doi_citation(text:str, doi:str):
     groups = re.findall(pat, pre_content, re.DOTALL)
     if groups:
         return (groups[0] + doi).strip()
-    return pre_content
+    return pre_content + doi
 
 
 class RefContext:
@@ -143,50 +143,56 @@ class CitationExtractor:
         """查找页面中的引用"""
         
         # 定义可能的DOI引用格式
-        target_doi = ct.dataset_id
+        target_doi = ct.dataset_id.strip()
+
         # 获取页面块，用于分析文本结构
         blocks = page.get_text("blocks")
         page_num = page.number + 1  # 页码从0开始，转换为从1开始
 
         contents = [block[4] for block in blocks]
         content = ''.join(contents)
-        # 检查所有可能的引用格式
-        doi_patterns = [
-            f"https://doi.org/{target_doi.split('doi.org/')[-1]}",  # 完整URL
-            f"DOI: {target_doi.split('doi.org/')[-1]}",  # DOI: 格式
-            f"DOI:{target_doi.split('doi.org/')[-1]}",  # DOI: 格式
-            f"doi: {target_doi.split('doi.org/')[-1]}",  # doi: 格式
-            f"doi:{target_doi.split('doi.org/')[-1]}",  # doi: 格式
-            f"{target_doi.split('doi.org/')[-1]}"  # 纯DOI号
-        ]
-        def add_ln(s):
-            arr = [f'{s[:i]}\n{s[i:]}' for i in range(1, len(s))]
-            temp = arr.copy()
-            for x in arr:
-                temp.extend([f'{x[:i]}\t{x[i:]}' for i in range(1, len(x))])
-                temp.extend([f'{x[:i]} {x[i:]}' for i in range(1, len(x))])
-            return temp
 
-        origin_2_news = {}
-        for pat in doi_patterns:
-            pats = add_ln(pat)
-            origin_2_news[pat] = pats
-        
-        pairs = sorted(origin_2_news.items(), key=lambda x:len(x[0]), reverse=True)
-
-        for pat, pat_ln_s in pairs:
-            pats = [pat] + pat_ln_s
-            for _pat in pats:
-                if content.find(_pat) == -1:
-                    continue
-                content = content.replace(_pat, pat)
-                citation_cont = cut_doi_citation(content, target_doi)
-                if not citation_cont:
-                    continue
-                ct.page_num = page_num
-                ct.content = citation_cont
-                ct.tag = extract_ref_tag(citation_cont)
-                return True
+        origin_cont = content
+        if target_doi.startswith('https://doi.org'):
+            # https://doi.org/10.5061/dryad.v2t58
+            target_doi = target_doi.lower()
+            doi_number = target_doi.split('doi.org/')[-1].strip().lower()
+            key_words = ['https', 'doi', 'DOI']
+            finded = False
+            for key_word in key_words:
+                content = origin_cont
+                while content:
+                    start = content.find(key_word)
+                    if start == -1:
+                        break
+                    word = ''
+                    origin_word = ''
+                    for ch in content[start:]:
+                        origin_word += ch
+                        ch = ch.strip()
+                        word += ch.lower()
+                        if word in {target_doi, doi_number}:
+                            origin_cont = origin_cont.replace(origin_word, word)
+                            target_doi = word
+                            finded = True
+                            break
+                        elif word != target_doi[:len(word)] and word != doi_number[:len(word)]:
+                            content = content[start+len(key_word):]
+                            break
+                    if finded:
+                        break
+                if finded:
+                    break
+        content = origin_cont
+        if content.find(target_doi) == -1:
+            return
+        citation_cont = cut_doi_citation(content, target_doi)
+        if not citation_cont:
+            return 
+        ct.page_num = page_num
+        ct.content = citation_cont
+        ct.tag = extract_ref_tag(citation_cont)
+        return True
         return False
 
     def cut_contexts(self, ct:Citation):
@@ -238,11 +244,13 @@ class CitationExtractor:
             )
             citations.append(citation)
         
-        for citation in citations:
+        for i, citation in enumerate(citations, start=1):
             extractor = cls(citation.article_id, pdf_dir)
             extractor.extract_citation(citation)
             extractor.close()
             citation.extrace_feature()
+            if i % 50 == 0:
+                print(f'finished {i}/{len(citations)}')
         
         if to_excel:
             file_path = f'citation_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
@@ -253,11 +261,11 @@ class CitationExtractor:
 
 if __name__ == "__main__":
     pdf_dir = Config.TRAIN_PDF_DIR
-    # csv_path = Config.TRAIN_LABLES
-    # CitationExtractor.pipeline(csv_path=csv_path, pdf_dir=pdf_dir, to_excel=True)
-    citation = Citation(article_id="10.1002_ece3.6303", dataset_id="https://doi.org/10.5061/dryad.37pvmcvgb")
-    extractor = CitationExtractor(citation.article_id, pdf_dir)
-    extractor.extract_citation(citation)
-    print(citation.ref_contexts)
-    print(citation.content)
+    csv_path = Config.TRAIN_LABLES
+    CitationExtractor.pipeline(csv_path=csv_path, pdf_dir=pdf_dir, to_excel=True)
+    # citation = Citation(article_id="10.1002_ece3.6303", dataset_id="https://doi.org/10.5061/dryad.37pvmcvgb")
+    # extractor = CitationExtractor(citation.article_id, pdf_dir)
+    # extractor.extract_citation(citation)
+    # print(citation.ref_contexts)
+    # print(citation.content)
 
