@@ -155,11 +155,18 @@ class CitationExtractor:
         origin_cont = content
         if target_doi.startswith('https://doi.org'):
             # https://doi.org/10.5061/dryad.v2t58
-            target_doi = target_doi.lower()
+            target_doi = re.sub(r'\.v[0-9]+$', '', target_doi)
             doi_number = target_doi.split('doi.org/')[-1].strip().lower()
-            key_words = ['https', 'doi', 'DOI']
+            # http://dx.doi.org/10.5061/dryad.p3fg9
+            origin_cont = origin_cont.replace('http://dx.doi', 'https://doi')
+            key_words = ['https', 'DOI', 'doi']
             finded = False
             for key_word in key_words:
+                if target_doi in origin_cont:
+                    break
+                if doi_number in origin_cont:
+                    target_doi = doi_number
+                    break
                 content = origin_cont
                 while content:
                     start = content.find(key_word)
@@ -193,7 +200,6 @@ class CitationExtractor:
         ct.content = citation_cont
         ct.tag = extract_ref_tag(citation_cont)
         return True
-        return False
 
     def cut_contexts(self, ct:Citation):
         """
@@ -263,7 +269,8 @@ if __name__ == "__main__":
     pdf_dir = Config.TRAIN_PDF_DIR
     csv_path = Config.TRAIN_LABLES
     CitationExtractor.pipeline(csv_path=csv_path, pdf_dir=pdf_dir, to_excel=True)
-    # citation = Citation(article_id="10.1002_ece3.6303", dataset_id="https://doi.org/10.5061/dryad.37pvmcvgb")
+    # 10.1002_ecs2.1280	https://doi.org/10.5061/dryad.p3fg9	Primary
+    # citation = Citation(article_id="10.1021_jacs.2c06519", dataset_id="https://doi.org/10.25377/sussex.21184705.v1")
     # extractor = CitationExtractor(citation.article_id, pdf_dir)
     # extractor.extract_citation(citation)
     # print(citation.ref_contexts)
