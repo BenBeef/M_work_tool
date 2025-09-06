@@ -100,6 +100,30 @@ def find_citations(page, target_doi):
     
     return citations
 
+def cut_contexts(doc, citation):
+    """
+    """
+    tag = citation.get('tag')
+    if not tag:
+        return 
+    
+    ref_contexts = []
+    for page in doc:
+        blocks = page.get_text("blocks")
+        page_num = page.number + 1  # 页码从0开始，转换为从1开始
+        for block in blocks:
+            block_text = block[4].strip()  # block[4]包含文本内容
+            idx = block_text.find(tag)
+            if idx == -1:
+                continue
+            ref_context = {
+                'page': page_num,
+                'ref_content':block_text[max(0, idx-256):idx+128]
+            }
+            ref_contexts.append(ref_context)
+    citation['ref_contexts'] = ref_contexts
+
+
 def process_pdf(pdf_path, target_doi):
     """处理PDF文件并查找所有引用"""
     try:
@@ -109,6 +133,8 @@ def process_pdf(pdf_path, target_doi):
         for page in doc:
             citations = find_citations(page, target_doi)
             if citations:
+                for citation in citations:
+                    cut_contexts(doc, citation)
                 all_citations.extend(citations)
         
         doc.close()
@@ -132,6 +158,7 @@ def print_citations(citations):
         print(f"匹配: {citation['match']}")
         print(f"引用上下文: {citation['context']}")
         print(f"引用标签: {citation['tag']}")
+        print(f"文中位置: {citation.get('ref_contexts', [])}")
         print("-" * 80)
 
 
