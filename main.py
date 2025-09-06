@@ -59,116 +59,8 @@ def cut_doi_citation(text:str, doi:str):
     groups = re.findall(pat, pre_content, re.DOTALL)
     if groups:
         return (groups[0] + doi).strip()
-    return None
+    return pre_content
 
-
-def find_citations(page, target_doi):
-    """查找页面中的引用"""
-    
-    # 定义可能的DOI引用格式
-    doi_patterns = [
-        rf"https?://doi\.org/{target_doi.split('doi.org/')[-1]}",  # 完整URL
-        rf"DOI:\s*{target_doi.split('doi.org/')[-1]}",  # DOI: 格式
-        rf"doi:\s*{target_doi.split('doi.org/')[-1]}",  # doi: 格式
-        rf"{target_doi.split('doi.org/')[-1]}"  # 纯DOI号
-    ]
-    
-    citations = []
-    
-    # 获取页面块，用于分析文本结构
-    blocks = page.get_text("blocks")
-    page_num = page.number + 1  # 页码从0开始，转换为从1开始
-
-
-    exist_pos = set()
-    
-    for block in blocks:
-        block_text = block[4]  # block[4]包含文本内容
-        block_bbox = block[:4]  # 文本块的边界框坐标
-        
-        # 检查所有可能的引用格式
-        for pattern in doi_patterns:
-            matches = re.finditer(pattern, block_text, re.IGNORECASE)
-            for match in matches:
-                pos = f'{block_bbox[0]}__{block_bbox[1]}__{block_bbox[2]}__{block_bbox[3]}'
-                if pos in exist_pos:
-                    continue
-                citation_cont = cut_doi_citation(block_text.strip(), target_doi)
-                if not citation_cont:
-                    continue
-                exist_pos.add(pos)
-                citation_info = {
-                    "page": page_num,
-                    "text": block_text.strip(),
-                    "position": f"坐标: ({block_bbox[0]:.2f}, {block_bbox[1]:.2f}, {block_bbox[2]:.2f}, {block_bbox[3]:.2f})",
-                    "match": match.group(),
-                    "context": citation_cont,
-                    "tag":extract_ref_tag(citation_cont)
-                }
-                citations.append(citation_info)
-    
-    return citations
-
-def cut_contexts(doc, citation):
-    """
-    """
-    tag = citation.get('tag')
-    if not tag:
-        return 
-    
-    ref_contexts = []
-    for page in doc:
-        blocks = page.get_text("blocks")
-        page_num = page.number + 1  # 页码从0开始，转换为从1开始
-        for block in blocks:
-            block_text = block[4].strip()  # block[4]包含文本内容
-            idx = block_text.find(tag)
-            if idx == -1:
-                continue
-            ref_context = {
-                'page': page_num,
-                'ref_content':block_text[max(0, idx-256):idx+128]
-            }
-            ref_contexts.append(ref_context)
-    citation['ref_contexts'] = ref_contexts
-
-
-def process_pdf(pdf_path, target_doi):
-    """处理PDF文件并查找所有引用"""
-    try:
-        doc = fitz.open(pdf_path)
-        all_citations = []
-        
-        for page in doc:
-            citations = find_citations(page, target_doi)
-            if citations:
-                for citation in citations:
-                    cut_contexts(doc, citation)
-                all_citations.extend(citations)
-        
-        doc.close()
-        return all_citations
-    
-    except Exception as e:
-        print(f"处理PDF时出错: {str(e)}")
-        raise
-
-def print_citations(citations):
-    """格式化打印引用信息"""
-    if not citations:
-        print("未找到引用")
-        return
-    
-    print(f"\n找到 {len(citations)} 处引用：\n")
-    for i, citation in enumerate(citations, 1):
-        print(f"引用 {i}:")
-        print(f"页码: {citation['page']}")
-        print(f"位置: {citation['position']}")
-        print(f"匹配: {citation['match']}")
-        print(f"引用内容: {citation['context']}")
-        print(f"引用标签: {citation['tag']}")
-        print(f"文中位置: {citation.get('ref_contexts', [])}")
-        print("-" * 80)
 
 class RefContext:
 
@@ -252,39 +144,49 @@ class CitationExtractor:
         
         # 定义可能的DOI引用格式
         target_doi = ct.dataset_id
-        doi_patterns = [
-            rf"https?://doi\.org/{target_doi.split('doi.org/')[-1]}",  # 完整URL
-            rf"DOI:\s*{target_doi.split('doi.org/')[-1]}",  # DOI: 格式
-            rf"doi:\s*{target_doi.split('doi.org/')[-1]}",  # doi: 格式
-            rf"{target_doi.split('doi.org/')[-1]}"  # 纯DOI号
-        ]
-        
         # 获取页面块，用于分析文本结构
         blocks = page.get_text("blocks")
         page_num = page.number + 1  # 页码从0开始，转换为从1开始
 
+        contents = [block[4] for block in blocks]
+        content = ''.join(contents)
+        # 检查所有可能的引用格式
+        doi_patterns = [
+            f"https://doi.org/{target_doi.split('doi.org/')[-1]}",  # 完整URL
+            f"DOI: {target_doi.split('doi.org/')[-1]}",  # DOI: 格式
+            f"DOI:{target_doi.split('doi.org/')[-1]}",  # DOI: 格式
+            f"doi: {target_doi.split('doi.org/')[-1]}",  # doi: 格式
+            f"doi:{target_doi.split('doi.org/')[-1]}",  # doi: 格式
+            f"{target_doi.split('doi.org/')[-1]}"  # 纯DOI号
+        ]
+        def add_ln(s):
+            arr = [f'{s[:i]}\n{s[i:]}' for i in range(1, len(s))]
+            temp = arr.copy()
+            for x in arr:
+                temp.extend([f'{x[:i]}\t{x[i:]}' for i in range(1, len(x))])
+                temp.extend([f'{x[:i]} {x[i:]}' for i in range(1, len(x))])
+            return temp
 
-        exist_pos = set()
+        origin_2_news = {}
+        for pat in doi_patterns:
+            pats = add_ln(pat)
+            origin_2_news[pat] = pats
         
-        for block in blocks:
-            block_text = block[4]  # block[4]包含文本内容
-            block_bbox = block[:4]  # 文本块的边界框坐标
-            
-            # 检查所有可能的引用格式
-            for pattern in doi_patterns:
-                matches = re.finditer(pattern, block_text, re.IGNORECASE)
-                for _ in matches:
-                    pos = f'{block_bbox[0]}__{block_bbox[1]}__{block_bbox[2]}__{block_bbox[3]}'
-                    if pos in exist_pos:
-                        continue
-                    citation_cont = cut_doi_citation(block_text.strip(), target_doi)
-                    if not citation_cont:
-                        continue
-                    exist_pos.add(pos)
-                    ct.page_num = page_num
-                    ct.content = citation_cont
-                    ct.tag = extract_ref_tag(citation_cont)
-                    return True
+        pairs = sorted(origin_2_news.items(), key=lambda x:len(x[0]), reverse=True)
+
+        for pat, pat_ln_s in pairs:
+            pats = [pat] + pat_ln_s
+            for _pat in pats:
+                if content.find(_pat) == -1:
+                    continue
+                content = content.replace(_pat, pat)
+                citation_cont = cut_doi_citation(content, target_doi)
+                if not citation_cont:
+                    continue
+                ct.page_num = page_num
+                ct.content = citation_cont
+                ct.tag = extract_ref_tag(citation_cont)
+                return True
         return False
 
     def cut_contexts(self, ct:Citation):
@@ -300,6 +202,7 @@ class CitationExtractor:
             page_num = page.number + 1  # 页码从0开始，转换为从1开始
             for block in blocks:
                 block_text = block[4].strip()  # block[4]包含文本内容
+                block_text = re.sub(r'\s+', ' ', block_text)  # 将连续的空白字符替换为单个空格
                 idx = block_text.find(tag)
                 if idx == -1:
                     continue
@@ -350,6 +253,11 @@ class CitationExtractor:
 
 if __name__ == "__main__":
     pdf_dir = Config.TRAIN_PDF_DIR
-    csv_path = './train_labels_test.csv'
-    CitationExtractor.pipeline(csv_path=csv_path, pdf_dir=pdf_dir, to_excel=True)
+    # csv_path = Config.TRAIN_LABLES
+    # CitationExtractor.pipeline(csv_path=csv_path, pdf_dir=pdf_dir, to_excel=True)
+    citation = Citation(article_id="10.1002_ece3.6303", dataset_id="https://doi.org/10.5061/dryad.37pvmcvgb")
+    extractor = CitationExtractor(citation.article_id, pdf_dir)
+    extractor.extract_citation(citation)
+    print(citation.ref_contexts)
+    print(citation.content)
 
