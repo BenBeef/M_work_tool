@@ -3,6 +3,15 @@
 from tkinter import N
 import fitz  # PyMuPDF
 import re
+import pandas as pd
+import numpy as np
+from typing import *
+from datetime import datetime
+import traceback
+import os
+from config import Config
+
+from sqlalchemy import false 
 
 def extract_ref_tag(citation_cont:str):
     """
@@ -161,14 +170,186 @@ def print_citations(citations):
         print(f"文中位置: {citation.get('ref_contexts', [])}")
         print("-" * 80)
 
+class RefContext:
+
+    def __init__(self, page:int, content:str) -> None:
+        self.page = page
+        self.content = content
+    
+    def __str__(self) -> str:
+        s = f'page:{self.page}, context:{self.content}'
+        return s
+    
+    def to_json(self):
+        return {'page':self.page, 'content':self.content}
+    
+    __repr__ = __str__
+
+class Citation:
+
+    def __init__(self, article_id:str, dataset_id:str, row_id=-1, true_type='Missing', pred_type="Missing") -> None:
+        self.row_id = row_id
+        self.article_id = article_id
+        self.dataset_id = dataset_id
+        self.true_type = true_type
+        self.pred_type = pred_type
+        self.page_num = -1  # 出现在文献的位置
+        self.content = '' # 引用内容
+        self.tag = None  # 出现在文章中的标签
+        self.ref_contexts = [] # 文中的上线文
+    
+    def __str__(self) -> str:
+        s = f'article_id:{self.article_id}, dataset_id:{self.dataset_id}, IN page:{self.page_num}, tag:{self.tag}'
+        return s
+    __repr__ = __str__
+
+    def extrace_feature(self):
+        """
+        """
+        pass
+    
+    @classmethod
+    def to_excel(cls, cts:List["Citation"], file_path):
+        """将Citation列表保存为Excel文件
+        Args:
+            cts: Citation对象列表
+            file_path: 保存的Excel文件路径
+        """
+        columns = ['row_id', 'article_id', 'dataset_id', 'type', 'pred_type', 'content', 'tag', 'ref_contexts']
+        
+        # 构建数据列表
+        data = []
+        for ct in cts:
+            row = {
+                'row_id': ct.row_id,
+                'article_id': ct.article_id,
+                'dataset_id': ct.dataset_id,
+                'type': ct.true_type,
+                'pred_type': ct.pred_type,
+                'content': ct.content,
+                'tag': ct.tag,
+                'ref_contexts': [ctx.to_json() for ctx in ct.ref_contexts] if ct.ref_contexts else []
+            }
+            data.append(row)
+            
+        # 转换为DataFrame并保存
+        df = pd.DataFrame(data, columns=columns)
+        df.to_excel(file_path, index=False)
+
+
+class CitationExtractor:
+
+    def __init__(self, article_id:str, pdf_dir) -> None:
+        self.article_id = article_id
+        self.pdf_path = os.path.join(pdf_dir, f'{self.article_id}.pdf')
+        self.doc = fitz.open(self.pdf_path)
+    
+    def close(self):
+        self.doc.close()
+    
+    def find_citations(self, page, ct:Citation):
+        """查找页面中的引用"""
+        
+        # 定义可能的DOI引用格式
+        target_doi = ct.dataset_id
+        doi_patterns = [
+            rf"https?://doi\.org/{target_doi.split('doi.org/')[-1]}",  # 完整URL
+            rf"DOI:\s*{target_doi.split('doi.org/')[-1]}",  # DOI: 格式
+            rf"doi:\s*{target_doi.split('doi.org/')[-1]}",  # doi: 格式
+            rf"{target_doi.split('doi.org/')[-1]}"  # 纯DOI号
+        ]
+        
+        # 获取页面块，用于分析文本结构
+        blocks = page.get_text("blocks")
+        page_num = page.number + 1  # 页码从0开始，转换为从1开始
+
+
+        exist_pos = set()
+        
+        for block in blocks:
+            block_text = block[4]  # block[4]包含文本内容
+            block_bbox = block[:4]  # 文本块的边界框坐标
+            
+            # 检查所有可能的引用格式
+            for pattern in doi_patterns:
+                matches = re.finditer(pattern, block_text, re.IGNORECASE)
+                for _ in matches:
+                    pos = f'{block_bbox[0]}__{block_bbox[1]}__{block_bbox[2]}__{block_bbox[3]}'
+                    if pos in exist_pos:
+                        continue
+                    citation_cont = cut_doi_citation(block_text.strip(), target_doi)
+                    if not citation_cont:
+                        continue
+                    exist_pos.add(pos)
+                    ct.page_num = page_num
+                    ct.content = citation_cont
+                    ct.tag = extract_ref_tag(citation_cont)
+                    return True
+        return False
+
+    def cut_contexts(self, ct:Citation):
+        """
+        """
+        tag = ct.tag
+        if not tag:
+            return 
+        
+        ref_contexts = []
+        for page in self.doc:
+            blocks = page.get_text("blocks")
+            page_num = page.number + 1  # 页码从0开始，转换为从1开始
+            for block in blocks:
+                block_text = block[4].strip()  # block[4]包含文本内容
+                idx = block_text.find(tag)
+                if idx == -1:
+                    continue
+                ref_context = RefContext(page=page_num, content=block_text[max(0, idx-256):idx+128])
+                ref_contexts.append(ref_context)
+        ct.ref_contexts = ref_contexts
+    
+    def extract_citation(self, ct:Citation):
+        """处理PDF文件并查找所有引用"""
+        try:
+            for page in self.doc:
+                if self.find_citations(page, ct):
+                    self.cut_contexts(ct)
+                    break
+        except Exception as e:
+            traceback.print_exc()
+            print(f"处理PDF时出错: {str(e)}")
+    
+    @classmethod
+    def pipeline(cls, csv_path:str, pdf_dir, to_excel=False):
+        df = pd.read_csv(csv_path)
+        if 'row_id' not in df.columns:
+            df['row_id'] = np.arange(1, len(df)+1)
+        
+        # 取出数据
+        citations:List[Citation] = []
+        for _, row in df.iterrows():
+            citation = Citation(
+                article_id=row['article_id'],
+                dataset_id=row['dataset_id'],
+                row_id=row['row_id'],
+                true_type=row.get('type', 'Missing')  # 使用get方法，如果没有type列则默认为Missing
+            )
+            citations.append(citation)
+        
+        for citation in citations:
+            extractor = cls(citation.article_id, pdf_dir)
+            extractor.extract_citation(citation)
+            extractor.close()
+            citation.extrace_feature()
+        
+        if to_excel:
+            file_path = f'citation_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+            Citation.to_excel(citations, file_path)
+        
+        return citations
+
 
 if __name__ == "__main__":
-    pdf_path = "10.1002_2017jc013030.pdf"
-    target_doi = "https://doi.org/10.17882/49388"
-    
-    try:
-        citations = process_pdf(pdf_path, target_doi)
-        print_citations(citations)
-    except Exception as e:
-        print(f"错误: {str(e)}")
+    pdf_dir = Config.TRAIN_PDF_DIR
+    csv_path = './train_labels_test.csv'
+    CitationExtractor.pipeline(csv_path=csv_path, pdf_dir=pdf_dir, to_excel=True)
 
