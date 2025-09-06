@@ -156,7 +156,7 @@ def print_citations(citations):
         print(f"页码: {citation['page']}")
         print(f"位置: {citation['position']}")
         print(f"匹配: {citation['match']}")
-        print(f"引用上下文: {citation['context']}")
+        print(f"引用内容: {citation['context']}")
         print(f"引用标签: {citation['tag']}")
         print(f"文中位置: {citation.get('ref_contexts', [])}")
         print("-" * 80)
